@@ -1,0 +1,13 @@
+{
+  "name": "create-cybermen",
+  "version": "0.1.0",
+  "description": "蒸馏万物，赛博永生 — 交互式赛博人蒸馏工具",
+  "main": "bin/cli.js",
+  "bin": {
+    "create-cybermen": "bin/cli.js"
+  },
+  "keywords": ["cybermen", "digital-employee", "agent", "distill"],
+  "author": "DaveCat <zdwlkpower@gmail.com>",
+  "license": "MIT",
+  "dependencies": {}
+}
