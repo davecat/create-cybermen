@@ -1,147 +1,93 @@
 #!/usr/bin/env node
 
-"use strict"
+import path from "path"
+import fs from "fs"
+import chalk from "chalk"
+import ora from "ora"
+import figlet from "figlet"
+import gradient from "gradient-string"
+import boxen from "boxen"
+import { select, input, checkbox, confirm } from "@inquirer/prompts"
 
-const path = require("path")
-const fs = require("fs")
-const readline = require("readline")
+import {
+  getDomainKey,
+  getRules,
+  getCategories,
+  getCategoryRules,
+} from "../knowledge/index.js"
+import { TYPES, PRESETS } from "../lib/presets.js"
 
-// ── 知识库 ──
-const knowledge = require("../knowledge/index")
-
-// ── 颜色 ──
-const cyan = (s) => `\x1b[36m${s}\x1b[0m`
-const green = (s) => `\x1b[32m${s}\x1b[0m`
-const yellow = (s) => `\x1b[33m${s}\x1b[0m`
-const gray = (s) => `\x1b[90m${s}\x1b[0m`
-const bold = (s) => `\x1b[1m${s}\x1b[0m`
-const dim = (s) => `\x1b[2m${s}\x1b[0m`
-const red = (s) => `\x1b[31m${s}\x1b[0m`
-
-const BANNER = `
-\x1b[36m┌─────────────────────────────────────────┐
-│                                         │
-│   \x1b[1m🤖  赛博人蒸馏器 v0.1.0\x1b[0m\x1b[36m              │
-│   \x1b[2m蒸馏万物，赛博永生\x1b[0m\x1b[36m                    │
-│                                         │
-└─────────────────────────────────────────┘\x1b[0m
-`
+// ── Banner ──
+function showBanner() {
+  const title = figlet.textSync("Cybermen", { font: "Small" })
+  const colored = gradient.pastel(title)
+  console.log(
+    boxen(
+      `${colored}\n\n  ${chalk.dim("蒸馏万物，赛博永生")}            v0.2.0`,
+      {
+        padding: 1,
+        borderStyle: "round",
+        borderColor: "cyan",
+      },
+    ),
+  )
+  console.log()
+}
 
 // ── 工具函数 ──
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-})
-
-function ask(question, defaultValue) {
-  return new Promise((resolve) => {
-    const hint = defaultValue ? ` ${dim(`(默认: ${defaultValue})`)}` : ""
-    rl.question(`${question}${hint} `, (answer) => {
-      resolve((answer || defaultValue || "").trim())
-    })
-  })
-}
-
-function choose(question, options) {
-  return new Promise((resolve) => {
-    console.log(question)
-    options.forEach((opt, i) => {
-      console.log(`  ${green(String(i + 1))}) ${opt}`)
-    })
-    rl.question(`\n选择 [1-${options.length}]: `, (answer) => {
-      const idx = parseInt(answer, 10) - 1
-      if (idx >= 0 && idx < options.length) {
-        resolve(options[idx])
-      } else {
-        resolve(options[0])
-      }
-    })
-  })
-}
-
-function multiChoose(question, options) {
-  return new Promise((resolve) => {
-    const selected = new Set()
-    console.log(question)
-    console.log(gray("  空格键 = 选择/取消, Enter = 确认\n"))
-
-    function render() {
-      process.stdout.write("\x1b[H\x1b[2J")
-      console.log(question)
-      console.log(gray("  空格键 = 选择/取消, Enter = 确认\n"))
-      options.forEach((opt, i) => {
-        const mark = selected.has(i) ? green("☑") : "☐"
-        console.log(`  ${mark} ${opt}`)
-      })
-    }
-
-    render()
-
-    process.stdin.setRawMode(true)
-    process.stdin.resume()
-    process.stdin.on("data", handler)
-
-    function handler(key) {
-      const byte = key[0]
-      if (byte === 3) process.exit(0) // Ctrl+C
-      if (byte === 13 || byte === 10) {
-        // Enter
-        process.stdin.setRawMode(false)
-        process.stdin.removeListener("data", handler)
-        resolve([...selected].map((i) => options[i]))
-        return
-      }
-      if (byte === 32) {
-        // Space - 选第一个未选的
-        for (let i = 0; i < options.length; i++) {
-          if (selected.has(i)) continue
-          selected.add(i)
-          break
-        }
-        render()
-        return
-      }
-      // 数字键 1-9 切换选择
-      const num = byte - 48
-      if (num >= 1 && num <= 9 && num <= options.length) {
-        const idx = num - 1
-        if (selected.has(idx)) selected.delete(idx)
-        else selected.add(idx)
-        render()
-      }
-    }
-  })
-}
-
-function progress(text) {
-  console.log(`\n  ${dim("✦")} ${text}`)
-}
-
-function separator(text) {
-  console.log(`\n${cyan("━".repeat(48))}`)
-  if (text) console.log(`  ${bold(text)}`)
-  console.log(cyan("━".repeat(48)))
-}
-
-function success(text) {
-  console.log(`\n  ${green("✓")} ${text}`)
-}
-
 function writeFile(filePath, content) {
   const dir = path.dirname(filePath)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(filePath, content, "utf8")
 }
 
+function stepTitle(num, text) {
+  console.log(`\n${chalk.cyan.bold(`  ◆ 第${num}步：${text}`)}\n`)
+}
+
+function progress(text) {
+  console.log(`\n  ${chalk.dim("✦")} ${chalk.italic(text)}`)
+}
+
+function divider() {
+  console.log(chalk.cyan("\n" + "─".repeat(50)))
+}
+
+// ── 知识库选择 ──
+async function selectFromRules(rules, hint) {
+  if (rules.length === 0) return []
+
+  console.log(`\n  ${hint}\n`)
+  const choices = rules.map((rule) => ({
+    name: `${rule.title}  ${chalk.dim(rule.desc)}`,
+    value: rule,
+  }))
+
+  const selected = await checkbox({
+    message: "选择适用的（空格选择，回车确认）",
+    choices,
+    theme: {
+      prefix: chalk.cyan("  ?"),
+    },
+  })
+
+  return selected.map((rule) => ({
+    title: rule.title,
+    scenario: rule.scenario,
+    steps: rule.steps,
+  }))
+}
+
 // ── 生成器 ──
 function generateIdentity(ctx) {
+  const typeLabel = TYPES.find((t) => t.key === ctx.typeKey)?.label || "赛博人"
   return `---
 name: ${ctx.name}
 description: ${ctx.description}
-type: cybermen
+type: ${ctx.typeKey}
 ---
 
-# ${ctx.name} — 赛博人档案
+# ${ctx.name} — ${typeLabel}档案
 
 ## 我是谁
 ${ctx.description}
@@ -149,29 +95,31 @@ ${ctx.description}
 ## 触发词
 ${ctx.triggers}
 
-## 职责范围
+## 领域
 ${ctx.domain}
 
 ## 核心能力
 ${ctx.capabilities}
 
-## 工作原则
-${ctx.principles || "- 先理解再行动\n- 不重复造轮子\n- 产出即标准"}`
+## 原则
+${ctx.principles || "- 按照设定行事\n- 保持人格一致性\n- 尊重边界"}`
 }
 
 function generateStyle(ctx) {
+  const p = PRESETS[ctx.typeKey]?.step6 || {}
+  const labels = (p.questions || []).map((q) => q.text.replace(/[?？]$/, ""))
   return `# ${ctx.name} 的风格
 
-## 沟通方式
+## ${labels[0] || "沟通方式"}
 ${ctx.communicationStyle || "根据实际情况调整"}
 
-## 决策风格
+## ${labels[1] || "行事风格"}
 ${ctx.decisionStyle || "根据实际情况调整"}
 
-## 完美主义程度
-${ctx.perfectionism || "适中，在关键处追求完美"}
+## ${labels[2] || "态度"}
+${ctx.perfectionism || "适中"}
 
-## 其他风格特征
+## 其他特征
 ${ctx.otherStyle || "无"}`
 }
 
@@ -192,22 +140,34 @@ ${content}`
 }
 
 function generateDecision(name, decision, why, impact) {
-  return `## 决策: ${decision}
+  return `## ${decision}
 
 **原因**: ${why}
 
 **影响**: ${impact || "待评估"}`
 }
 
-function generatePitfall(name, pitfall, lesson) {
-  return `## 踩坑: ${pitfall}
-
-**教训**: ${lesson}`
-}
-
 // ── 蒸馏流程 ──
 async function distill() {
+  divider()
+  console.log(chalk.bold("\n  选择你要创造的赛博人类型\n"))
+
+  // 选择人格类型
+  const typeKey = await select({
+    message: "你想蒸馏什么?",
+    choices: TYPES.map((t) => ({
+      name: `${t.emoji}  ${t.label} ${chalk.dim("— " + t.desc)}`,
+      value: t.key,
+    })),
+    theme: {
+      prefix: chalk.cyan("  ?"),
+    },
+  })
+
+  const preset = PRESETS[typeKey]
+
   const ctx = {
+    typeKey,
     name: "",
     description: "",
     triggers: "",
@@ -217,7 +177,6 @@ async function distill() {
     methods: [],
     boundaries: [],
     decisions: [],
-    pitfalls: [],
     communicationStyle: "",
     decisionStyle: "",
     perfectionism: "",
@@ -225,195 +184,271 @@ async function distill() {
     importPath: "",
   }
 
-  separator("开始创造你的赛博人")
+  divider()
 
-  // 第一步：名字和身份
-  console.log(`\n${bold("第一步：给他一个名字和身份")}\n`)
-  ctx.name = await ask("赛博人名称:")
+  // ── 第一步：名字和身份 ──
+  stepTitle("一", preset.step1.title)
+  ctx.name = await input({
+    message: "名称:",
+    theme: { prefix: chalk.cyan("  ?") },
+  })
   if (!ctx.name) {
-    console.log(red("名称不能为空，蒸馏取消"))
+    console.log(chalk.red("\n  名称不能为空，蒸馏取消\n"))
     process.exit(0)
   }
-  ctx.description = await ask("一句话介绍他:")
-  ctx.triggers = await ask("别人怎么叫他?（触发词，逗号分隔）:", ctx.name)
+  ctx.description = await input({
+    message: preset.step1.descPrompt,
+    theme: { prefix: chalk.cyan("  ?") },
+  })
+  ctx.triggers = await input({
+    message: preset.step1.triggerPrompt,
+    default: ctx.name,
+    theme: { prefix: chalk.cyan("  ?") },
+  })
 
-  progress(`赛博人「${ctx.name}」已苏醒，但他还是一张白纸...`)
+  progress(preset.step1.awaken(ctx.name))
 
-  // 第二步：职责
-  console.log(`\n${bold("第二步：赋予他职责")}\n`)
-  ctx.domain = await ask("他负责什么领域?:")
-  ctx.capabilities = await ask("你希望他帮你干什么?:")
+  // ── 第二步 ──
+  stepTitle("二", preset.step2.title)
+  for (const p of preset.step2.prompts) {
+    ctx[p.key] = await input({
+      message: p.text,
+      theme: { prefix: chalk.cyan("  ?") },
+    })
+  }
 
-  progress(`「${ctx.name}」开始理解自己的使命...`)
+  progress(preset.step2.progress(ctx.name))
 
-  // 第三步：教他做事
-  console.log(`\n${bold("第三步：教他做事的方法")}\n`)
-  const mode = await choose("选择添加方式:", [
-    "从预置知识库中选择",
-    "手动输入",
-    "跳过",
-  ])
+  // ── 第三步 ──
+  stepTitle("三", preset.step3.title)
 
-  if (mode === "从预置知识库中选择") {
-    const domain = await choose("选择领域:", [
-      "前端开发",
-      "后端开发",
-      "产品设计",
-      "测试",
-      "运维",
-      "其他",
-    ])
-    const kbKey = knowledge.getDomainKey(domain)
-    const commonRules = knowledge.getRules(kbKey)
+  if (preset.step3.useKnowledge) {
+    const addMode = await select({
+      message: "选择添加方式:",
+      choices: [
+        { name: "从预置知识库中选择", value: "kb" },
+        { name: "手动输入", value: "manual" },
+        { name: "跳过", value: "skip" },
+      ],
+      theme: { prefix: chalk.cyan("  ?") },
+    })
 
-    if (commonRules.length > 0) {
-      console.log(`\n以下是${domain}常见规范，哪些适用于你的项目?\n`)
-      console.log(gray("输入编号选择（逗号分隔），输入 skip 跳过:"))
-      commonRules.forEach((rule, i) => {
-        console.log(`  ${green(String(i + 1))}. ${rule.title}`)
-        console.log(`     ${gray(rule.desc)}`)
-      })
-
-      const selection = await ask("")
-      if (selection.toLowerCase() !== "skip") {
-        const indices = selection
-          .split(/[,，]/)
-          .map((s) => parseInt(s.trim(), 10) - 1)
-          .filter((i) => i >= 0 && i < commonRules.length)
-
-        indices.forEach((i) => {
-          ctx.methods.push({
-            title: commonRules[i].title,
-            scenario: commonRules[i].scenario,
-            steps: commonRules[i].steps,
+    if (addMode === "kb") {
+      if (typeKey === "tech") {
+        const domains = preset.step3.domains || []
+        const domain = await select({
+          message: "选择领域:",
+          choices: domains.map((d) => ({ name: d, value: d })),
+          theme: { prefix: chalk.cyan("  ?") },
+        })
+        const kbKey = getDomainKey(domain)
+        const rules = getRules(kbKey)
+        const selected = await selectFromRules(
+          rules,
+          `以下是${domain}常见规范:`,
+        )
+        ctx.methods.push(...selected)
+      } else {
+        const categories = getCategories(typeKey)
+        if (categories.length > 0) {
+          const category = await select({
+            message: "选择类别:",
+            choices: categories.map((c) => ({ name: c, value: c })),
+            theme: { prefix: chalk.cyan("  ?") },
           })
+          const rules = getCategoryRules(typeKey, category)
+          const selected = await selectFromRules(
+            rules,
+            `以下是预置的${category}特征:`,
+          )
+          ctx.methods.push(...selected)
+        } else {
+          console.log(chalk.dim("  该类型暂无预置知识库，请手动输入"))
+        }
+      }
+    } else if (addMode === "manual") {
+      let adding = true
+      while (adding) {
+        const title = await input({
+          message: preset.step3.manual.titlePrompt,
+          theme: { prefix: chalk.cyan("  ?") },
+        })
+        const scenario = await input({
+          message: preset.step3.manual.scenarioPrompt,
+          theme: { prefix: chalk.cyan("  ?") },
+        })
+        const steps = await input({
+          message: preset.step3.manual.stepsPrompt,
+          theme: { prefix: chalk.cyan("  ?") },
+        })
+        ctx.methods.push({ title, scenario, steps })
+
+        adding = await confirm({
+          message: "继续添加?",
+          default: false,
+          theme: { prefix: chalk.cyan("  ?") },
         })
       }
     }
-  } else if (mode === "手动输入") {
-    let done = false
-    while (!done) {
-      const title = await ask("方法名称（如: 创建新模块）:")
-      const scenario = await ask("触发场景（什么时候用这个方法）:")
-      const steps = await ask("执行步骤:")
-      ctx.methods.push({ title, scenario, steps })
+  } else {
+    const addMode = await select({
+      message: "选择添加方式:",
+      choices: [
+        { name: "手动输入", value: "manual" },
+        { name: "跳过", value: "skip" },
+      ],
+      theme: { prefix: chalk.cyan("  ?") },
+    })
+    if (addMode === "manual") {
+      let adding = true
+      while (adding) {
+        const title = await input({
+          message: preset.step3.manual.titlePrompt,
+          theme: { prefix: chalk.cyan("  ?") },
+        })
+        const scenario = await input({
+          message: preset.step3.manual.scenarioPrompt,
+          theme: { prefix: chalk.cyan("  ?") },
+        })
+        const steps = await input({
+          message: preset.step3.manual.stepsPrompt,
+          theme: { prefix: chalk.cyan("  ?") },
+        })
+        ctx.methods.push({ title, scenario, steps })
 
-      const more = await ask("还有吗? [y/n]:", "n")
-      done = more.toLowerCase() !== "y"
+        adding = await confirm({
+          message: "继续添加?",
+          default: false,
+          theme: { prefix: chalk.cyan("  ?") },
+        })
+      }
     }
   }
 
-  const unique = await ask("你独特的做法?（可选，补充预置中没有的）:")
+  const unique = await input({
+    message: preset.step3.uniquePrompt,
+    theme: { prefix: chalk.cyan("  ?") },
+  })
   if (unique) {
     ctx.methods.push({
-      title: "自定义方法",
+      title: "自定义",
       scenario: "根据场景判断",
       steps: unique,
     })
   }
 
-  progress(`「${ctx.name}」学会了你的做事方式...`)
+  progress(preset.step3.progress(ctx.name))
 
-  // 第四步：技术决策
-  console.log(`\n${bold("第四步：告诉他你做过的决定")}\n`)
-  console.log(gray("回想一下，你做过什么和别人不一样的技术选择?"))
-  console.log(gray("或者什么决定，事后证明是对的?\n"))
+  // ── 第四步 ──
+  stepTitle("四", preset.step4.title)
+  console.log(chalk.dim(`  ${preset.step4.hint}`))
+  console.log(chalk.dim(`  ${preset.step4.hint2}\n`))
 
-  let done = false
-  while (!done) {
-    const decision = await ask("你做了什么决定?:")
-    if (decision) {
-      const why = await ask("为什么这么做?:")
-      const impact = await ask("这个决定的影响?:", "")
-      ctx.decisions.push({ decision, why, impact })
-    }
-    if (!decision) {
-      done = true
-    } else {
-      const more = await ask("还有吗? [y/n]:", "n")
-      done = more.toLowerCase() !== "y"
-    }
+  let addingDecisions = true
+  while (addingDecisions) {
+    const decision = await input({
+      message: preset.step4.decisionPrompt,
+      theme: { prefix: chalk.cyan("  ?") },
+    })
+    if (!decision) break
+
+    const why = await input({
+      message: preset.step4.whyPrompt,
+      theme: { prefix: chalk.cyan("  ?") },
+    })
+    const impact = await input({
+      message: preset.step4.impactPrompt,
+      default: "",
+      theme: { prefix: chalk.cyan("  ?") },
+    })
+    ctx.decisions.push({ decision, why, impact })
+
+    addingDecisions = await confirm({
+      message: "继续添加?",
+      default: false,
+      theme: { prefix: chalk.cyan("  ?") },
+    })
   }
 
-  progress(`「${ctx.name}」理解了你的决策逻辑...`)
+  progress(preset.step4.progress(ctx.name))
 
-  // 第五步：红线
-  console.log(`\n${bold("第五步：划定他的红线")}\n`)
-  console.log(gray("有什么事是他绝对不能做的?"))
-  console.log(gray("什么事会把他惹毛?\n"))
+  // ── 第五步 ──
+  stepTitle("五", preset.step5.title)
+  console.log(chalk.dim(`  ${preset.step5.hint}`))
+  console.log(chalk.dim(`  ${preset.step5.hint2}\n`))
 
-  done = false
-  while (!done) {
-    const boundary = await ask("红线:")
-    if (boundary) {
-      ctx.boundaries.push(boundary)
-    }
-    if (!boundary) {
-      done = true
-    } else {
-      const more = await ask("还有吗? [y/n]:", "n")
-      done = more.toLowerCase() !== "y"
-    }
+  let addingBoundaries = true
+  while (addingBoundaries) {
+    const boundary = await input({
+      message: preset.step5.prompt,
+      theme: { prefix: chalk.cyan("  ?") },
+    })
+    if (!boundary) break
+
+    ctx.boundaries.push(boundary)
+    addingBoundaries = await confirm({
+      message: "继续添加?",
+      default: false,
+      theme: { prefix: chalk.cyan("  ?") },
+    })
   }
 
-  progress(`「${ctx.name}」记住了你的底线...`)
+  progress(preset.step5.progress(ctx.name))
 
-  // 第六步：风格
-  console.log(`\n${bold("第六步：塑造他的风格")}\n`)
+  // ── 第六步 ──
+  stepTitle("六", preset.step6.title)
 
-  ctx.communicationStyle = await choose("他说话直接还是委婉?", [
-    "直接了当，结论先行",
-    "委婉铺垫，逐步说明",
-    "看情况灵活切换",
-  ])
+  for (const q of preset.step6.questions) {
+    ctx[q.key] = await select({
+      message: q.text,
+      choices: q.options.map((o) => ({ name: o, value: o })),
+      theme: { prefix: chalk.cyan("  ?") },
+    })
+  }
 
-  ctx.decisionStyle = await choose("他想清楚再做还是先做再说?", [
-    "想清楚再做，谋定而后动",
-    "先做了再说，边做边调整",
-    "重要决策想清楚，小决策先做",
-  ])
+  ctx.otherStyle = await input({
+    message: preset.step6.otherPrompt,
+    default: "无",
+    theme: { prefix: chalk.cyan("  ?") },
+  })
 
-  ctx.perfectionism = await choose("他追求完美还是够用就行?", [
-    "核心功能追求完美，边缘场景够用就行",
-    "所有细节都要完美",
-    "先跑起来再说，慢慢优化",
-  ])
+  progress(preset.step6.progress(ctx.name))
 
-  ctx.otherStyle = await ask("还有其他风格特征吗?（可选）:", "无")
+  // ── 第七步 ──
+  stepTitle("七", preset.step7.title)
+  console.log(chalk.dim(`  ${preset.step7.hint}`))
+  console.log(chalk.dim(`  ${preset.step7.hint2}\n`))
 
-  progress(`「${ctx.name}」的性格逐渐丰满...`)
-
-  // 第七步：导入资料
-  console.log(`\n${bold("第七步：给他看看你以前的作品")}\n`)
-  console.log(gray("有没有已经写好的规范、文档、代码?"))
-  console.log(gray("可以导入 .cursor/rules, .md, .json 等文件\n"))
-
-  ctx.importPath = await ask("路径或 URL（可选，留空跳过）:", "")
+  ctx.importPath = await input({
+    message: preset.step7.prompt,
+    default: "",
+    theme: { prefix: chalk.cyan("  ?") },
+  })
 
   if (ctx.importPath) {
-    progress(`「${ctx.name}」正在学习你的历史资料...`)
+    progress(preset.step7.progress(ctx.name))
   }
 
-  // 生成文件
-  separator("正在生成赛博人")
+  // ── 生成文件 ──
+  divider()
+  const spinner = ora({
+    text: chalk.cyan("正在生成赛博人档案..."),
+    spinner: "dots12",
+    color: "cyan",
+  }).start()
 
   const outputDir = path.join(process.cwd(), "cybermen", ctx.name)
   let fileCount = 0
 
-  // identity.md
   writeFile(path.join(outputDir, "identity.md"), generateIdentity(ctx))
   fileCount++
 
-  // style.md
   writeFile(path.join(outputDir, "style.md"), generateStyle(ctx))
   fileCount++
 
-  // methods
   if (ctx.methods.length > 0) {
     ctx.methods.forEach((m) => {
-      const fileName = `${m.title
-        .replace(/[^a-zA-Z\u4e00-\u9fff]/g, "")
-        .toLowerCase()}.skill`
+      const fileName = `${m.title.replace(/[^a-zA-Z\u4e00-\u9fff]/g, "").toLowerCase()}.skill`
       writeFile(
         path.join(outputDir, "methods", fileName),
         generateMethod(ctx.name, m.title, m),
@@ -422,7 +457,6 @@ async function distill() {
     })
   }
 
-  // boundaries
   if (ctx.boundaries.length > 0) {
     ctx.boundaries.forEach((b, i) => {
       writeFile(
@@ -433,9 +467,8 @@ async function distill() {
     })
   }
 
-  // decisions
   if (ctx.decisions.length > 0) {
-    let content = `# ${ctx.name} 的技术决策\n\n`
+    let content = `# ${ctx.name} 的核心记忆\n\n`
     ctx.decisions.forEach((d) => {
       content +=
         generateDecision(ctx.name, d.decision, d.why, d.impact) + "\n\n"
@@ -444,51 +477,72 @@ async function distill() {
     fileCount++
   }
 
-  // pitfalls
-  if (ctx.pitfalls.length > 0) {
-    let content = `# ${ctx.name} 的踩坑记录\n\n`
-    ctx.pitfalls.forEach((p) => {
-      content += generatePitfall(ctx.name, p.pitfall, p.lesson) + "\n\n"
-    })
-    writeFile(path.join(outputDir, "pitfalls", "pitfalls.md"), content)
-    fileCount++
-  }
+  // 模拟一点生成时间，让 spinner 有存在感
+  await new Promise((r) => setTimeout(r, 800))
+  spinner.succeed(chalk.green("生成完成"))
 
   // 完成
-  separator(`🎉 赛博人「${ctx.name}」蒸馏完成！`)
-
-  console.log(`\n  位置: ${green(outputDir)}`)
-  console.log(`  文件: ${fileCount} 个\n`)
-  console.log(dim("  他带着你的做事方式、你的红线、你的风格，"))
-  console.log(dim("  可以开始替你干活了。\n"))
+  const typeInfo = TYPES.find((t) => t.key === typeKey)
+  console.log(
+    boxen(
+      `${typeInfo.emoji}  ${chalk.bold(ctx.name)}\n\n` +
+        `${chalk.dim("类型")}  ${typeInfo.label}\n` +
+        `${chalk.dim("文件")}  ${fileCount} 个\n` +
+        `${chalk.dim("位置")}  ${chalk.underline(outputDir)}`,
+      {
+        padding: 1,
+        margin: { top: 1, bottom: 1, left: 2, right: 2 },
+        borderStyle: "round",
+        borderColor: "green",
+        title: "蒸馏完成",
+        titleAlignment: "center",
+      },
+    ),
+  )
+  console.log(chalk.dim("  蒸馏万物，赛博永生。\n"))
 }
 
 // ── 主入口 ──
 async function main() {
-  console.log(BANNER)
+  showBanner()
 
-  const mode = await choose("选择蒸馏模式:", [
-    "✦  交互式蒸馏 — 通过对话逐步构建赛博人",
-    "🤖  LLM自动萃取 — 你只需要历史资产，自动分析生成赛博人",
-  ])
+  const mode = await select({
+    message: "选择蒸馏模式:",
+    choices: [
+      {
+        name: `${chalk.cyan("✦")}  交互式蒸馏 ${chalk.dim("— 通过对话逐步构建赛博人")}`,
+        value: "interactive",
+      },
+      {
+        name: `🤖  LLM自动萃取 ${chalk.dim("— 从已有资产自动生成赛博人")}`,
+        value: "llm",
+      },
+    ],
+    theme: { prefix: chalk.cyan("  ?") },
+  })
 
-  if (mode.includes("LLM自动萃取")) {
-    console.log(`\n${yellow("⏳ LLM自动萃取模式开发中...")}\n`)
-    console.log("预计功能:")
-    console.log("  - 自动解析 .cursor/rules, CLAUDE.md 等规范文件")
+  if (mode === "llm") {
     console.log(
-      "  - 提取 Git 提交记录、PR 评论中的决策依据，自动分析生成赛博人",
+      boxen(
+        `${chalk.yellow("⏳ LLM自动萃取模式开发中...")}\n\n` +
+          "预计功能:\n" +
+          "  - 自动解析 .cursor/rules, CLAUDE.md 等规范文件\n" +
+          "  - 提取您提供的任何资产中的决策依据\n\n" +
+          chalk.dim("你可以先用「交互式蒸馏」快速体验。"),
+        {
+          padding: 1,
+          margin: { top: 1, left: 2 },
+          borderStyle: "round",
+          borderColor: "yellow",
+        },
+      ),
     )
-    console.log("\n你可以先用「交互式蒸馏」快速体验。\n")
-    rl.close()
-    return
   } else {
     await distill()
-    rl.close()
   }
 }
 
 main().catch((err) => {
-  console.error(red("出错了:"), err)
+  console.error(chalk.red("出错了:"), err)
   process.exit(1)
 })
